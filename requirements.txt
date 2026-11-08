@@ -1,0 +1,11 @@
+Django==6.1.3
+djangorestframework==3.18.3
+python-decouple==3.8
+psycopg2-binary==2.9.10
+django-cors-headers==4.6.0
+
+# Deployment-only — not imported by the app itself, matches the pattern
+# UrbanNest-Core-Backend uses (installed into the venv at deploy time, see
+# infrastructure/UrbanNest_AWS_Deployment_Running.md §5). Kept here (unlike that
+# repo) so a fresh `pip install -r requirements.txt` is deploy-ready on day one.
+gunicorn==23.0.0
