@@ -18,21 +18,26 @@ depend on without creating app-to-app coupling (`scheduling` importing from
 `notifications`, etc.) — `core` is for exactly this: infrastructure with no
 business meaning of its own.
 
-Still a placeholder, not yet built:
-  - NeyoClient            — one row per PM System that integrates with Neyora
-                            (client_id, the long-lived API key, onboarding status).
-                            §2.7 "client onboarding".
-  - The sandbox-client flow (ARCH_056).
-  - The widget-token model/table backing POST /api/widget-tokens/ (§20.2) — the
-    actual short-lived token issuance Neyora's own API exposes, which UrbanNest's
-    neyora_interface_layer.client.NeyoraClient.mint_widget_token() calls into.
+NeyoClient is now REAL too (Phase 0.5, built for real rather than as a dev-only
+auth stub — see the living plan doc's Step 1, revised after the user's explicit
+"do everything in a logical order" decision). §2.7 Step 1's field table.
 
-Do not add NeyoClient/widget-token models here without re-reading §2.7/§2.8/§20
-first — this app is the security boundary between "a PM System's long-lived API
-key" and "a browser-facing short-lived widget token," and getting that boundary
-wrong is the one mistake this whole initiative is designed to prevent (see the
-architecture doc's own framing).
+Still a placeholder, not yet built:
+  - The sandbox-client flow (ARCH_056).
+  - Widget-token issuance has NO model/table by design (§20.2 point 3: "No
+    database row is created for this — it's a stateless, signed credential").
+    See core/tokens.py for the mint/verify functions and core/authentication.py
+    for the DRF authentication classes that consume them.
+
+This app is the security boundary between "a PM System's long-lived API key"
+(NeyoClient.api_key) and "a browser-facing short-lived widget token"
+(core/tokens.py) — getting that boundary wrong is the one mistake this whole
+initiative is designed to prevent (see the architecture doc's own framing).
+Do not add a widget-token *model* here without re-reading §20.2 first — that
+would contradict the "no database row" decision, not just duplicate it.
 """
+
+import secrets
 
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -123,3 +128,90 @@ def validate_reference_value(reference_value, *, field_code, client_id):
             f"NeyoReferenceValue id={reference_value.id} "
             f"({field_code}={reference_value.value_code}) is retired (is_active=False)."
         )
+
+
+# field_code constants for NeyoClient's own two reference-scoped fields below.
+# Self-referential by design: a NeyoClient's status/plan_tier are validated
+# against NeyoReferenceValue rows scoped by that SAME client_id (e.g.
+# client_id="UN" has its own CLIENT_STATUS="ACTIVE" row) — every client
+# describes its own onboarding state the same way it describes everything
+# else in Neyora (ARCH_042), including itself.
+FIELD_CODE_CLIENT_STATUS = "CLIENT_STATUS"       # §2.7 Step 1 — ACTIVE/SUSPENDED
+FIELD_CODE_CLIENT_PLAN_TIER = "CLIENT_PLAN_TIER"  # §2.7 Step 1 — entitlement tier, feature-gating only
+
+# The two value_codes the architecture doc's own worked example (§21.3) uses
+# for NeyoClient — not an exhaustive enum (ARCH_042: no hardcoded choices),
+# just the well-known ones referenced directly from code (e.g. the API-key
+# auth class below checking a client is ACTIVE before accepting its key).
+CLIENT_STATUS_ACTIVE = "ACTIVE"
+CLIENT_STATUS_SUSPENDED = "SUSPENDED"
+
+
+def generate_client_api_key() -> str:
+    """
+    §2.7 Step 2 — "Neyora generates a client-scoped API key tied to that
+    client_id." A random URL-safe token, not a JWT/signed structure like the
+    widget token (core/tokens.py) — this credential is looked up by exact
+    value against NeyoClient.api_key (see core/authentication.py), never
+    decoded, so there's nothing for a signature to buy here. 43 chars from
+    secrets.token_urlsafe(32) — plenty of entropy for a server-to-server-only
+    secret that's never brute-forced over a public endpoint.
+    """
+    return secrets.token_urlsafe(32)
+
+
+class NeyoClient(models.Model):
+    """
+    Architecture doc §2.7 Step 1 / §21.3's worked example.
+
+    One row per PM System that integrates with Neyora — UrbanNest's own
+    rollout is "Step 1 run for the first time," not a special case (§2.7's
+    own framing); a future "Galaxy PMS" onboarding creates a second row here,
+    nothing else.
+
+    Deliberately excludes any billing/invoice detail (§2.7 Step 1) — that
+    stays in each client's own system, never inside Neyora.
+    """
+
+    # Opaque scalar PK (ARCH_044) — "generated at registration," but for the
+    # worked example (and UrbanNest's own real rollout) that's the short,
+    # human-chosen "UN" the architecture doc itself uses throughout §21.3.
+    # A future client ("Galaxy") gets its own short code the same way.
+    client_id = models.CharField(max_length=64, primary_key=True)
+
+    name = models.CharField(max_length=255)
+
+    status = models.ForeignKey(
+        NeyoReferenceValue,
+        on_delete=models.PROTECT,
+        related_name="clients_by_status",
+        limit_choices_to={"field_code": FIELD_CODE_CLIENT_STATUS},
+    )
+    plan_tier = models.ForeignKey(
+        NeyoReferenceValue,
+        on_delete=models.PROTECT,
+        related_name="clients_by_plan_tier",
+        limit_choices_to={"field_code": FIELD_CODE_CLIENT_PLAN_TIER},
+    )
+
+    # §2.7 Step 2 — the long-lived, server-to-server-only credential. Looked
+    # up by exact match in core/authentication.py; never logged, never
+    # returned from any API response (see core/views.WidgetTokenView's own
+    # docstring on this point).
+    api_key = models.CharField(max_length=128, unique=True, default=generate_client_api_key, editable=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"NeyoClient(client_id={self.client_id!r}, name={self.name!r})"
+
+    def clean(self):
+        super().clean()
+        if self.status_id:
+            validate_reference_value(
+                self.status, field_code=FIELD_CODE_CLIENT_STATUS, client_id=self.client_id
+            )
+        if self.plan_tier_id:
+            validate_reference_value(
+                self.plan_tier, field_code=FIELD_CODE_CLIENT_PLAN_TIER, client_id=self.client_id
+            )

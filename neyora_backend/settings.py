@@ -144,11 +144,18 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
 # Django REST Framework — every Neyora API endpoint (§13 of the architecture doc)
-# is built as a DRF view. No default authentication/permission classes are wired
-# yet: Phase 0.5 designs the real client-API-key / short-lived-widget-token auth
-# (ARCH_050, §20 of the architecture doc) as its own DRF authentication class —
-# this is deliberately left unconfigured rather than guessed at here.
+# is built as a DRF view. Phase 0.5's real client-API-key / short-lived-widget-
+# token auth (ARCH_050, §20) is now built for real (core/authentication.py,
+# core/tokens.py) rather than left unconfigured. Both classes are listed by
+# default so most endpoints accept either credential per §13 ("Neyora's auth
+# layer accepts either credential on its API"); core.views.WidgetTokenView
+# deliberately overrides this with just the API-key class — see its own
+# docstring for why ("never callable with a short-lived token itself").
 REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "core.authentication.NeyoClientApiKeyAuthentication",
+        "core.authentication.NeyoWidgetTokenAuthentication",
+    ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],

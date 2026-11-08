@@ -14,4 +14,6 @@ from django.urls import include, path
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/health/", include("healthcheck.urls")),
+    path("api/", include("core.urls")),               # /api/widget-tokens/
+    path("api/calendars/", include("scheduling.urls")),  # /api/calendars/...
 ]
